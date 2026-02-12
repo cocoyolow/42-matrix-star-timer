@@ -44,3 +44,5 @@ The application now includes a background monitoring feature that:
 - Checks for upcoming evaluations (scale_teams) every 60 seconds
 - Sends a system notification when an evaluation is starting within 5 minutes
 - Handles the case where `plyer` is not installed gracefully (notifications will be logged to console instead)
+
+**Note:** Only one user can be monitored at a time. If the endpoint is called with a different login, the monitored user will be updated to the new login.

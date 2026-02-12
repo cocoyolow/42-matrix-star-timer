@@ -27,6 +27,8 @@ SECRET = "ENTER_YOUR_SECRET_HERE"
 monitored_user = None
 timer_thread = None
 timer_thread_running = False
+timer_lock = threading.Lock()  # Lock for thread-safe access to monitored_user
+notified_events = set()  # Track which events we've already notified about
 
 
 def get_access_token():
@@ -64,15 +66,17 @@ def send_notification(title, message):
 
 def check_timer_loop():
     """Background thread that monitors upcoming scale_teams (evaluations)."""
-    global timer_thread_running, monitored_user
-    
-    notified_events = set()  # Track which events we've already notified about
+    global timer_thread_running, monitored_user, notified_events
     
     print(f"Starting timer monitoring for user: {monitored_user}")
     
     while timer_thread_running:
         try:
-            if not monitored_user:
+            # Get current monitored user with thread safety
+            with timer_lock:
+                current_user = monitored_user
+            
+            if not current_user:
                 time.sleep(60)
                 continue
             
@@ -85,7 +89,7 @@ def check_timer_loop():
             headers = {"Authorization": f"Bearer {token}"}
             
             # Fetch upcoming scale_teams (evaluations) for the user
-            url = f"https://api.intra.42.fr/v2/users/{monitored_user}/scale_teams/as_corrector"
+            url = f"https://api.intra.42.fr/v2/users/{current_user}/scale_teams/as_corrector"
             response = requests.get(url, headers=headers)
             
             if response.status_code != 200:
@@ -96,6 +100,19 @@ def check_timer_loop():
             scale_teams = response.json()
             now = datetime.now(timezone.utc)
             
+            # First, identify old events (more than 1 hour past)
+            old_event_ids = set()
+            for event in scale_teams:
+                if event.get('begin_at'):
+                    begin_time = parser.isoparse(event['begin_at'])
+                    if (now - begin_time).total_seconds() > 3600:
+                        event_id = f"{event.get('id')}_{event.get('begin_at')}"
+                        old_event_ids.add(event_id)
+            
+            # Clean up old event IDs from notified_events
+            notified_events = notified_events - old_event_ids
+            
+            # Check for upcoming events
             for event in scale_teams:
                 # Only check upcoming events (not past ones)
                 if event.get('begin_at'):
@@ -118,13 +135,6 @@ def check_timer_loop():
                         notified_events.add(event_id)
                         print(f"Notified about evaluation: {team_name} in {minutes_left} minutes")
             
-            # Clean up old event IDs from notified_events (events more than 1 hour old)
-            notified_events = {eid for eid in notified_events 
-                             if not any(eid.startswith(str(e.get('id'))) 
-                                      for e in scale_teams 
-                                      if e.get('begin_at') and 
-                                      (now - parser.isoparse(e['begin_at'])).total_seconds() > 3600)}
-            
         except Exception as e:
             print(f"Error in timer check loop: {e}")
         
@@ -140,14 +150,16 @@ def get_logtime(login):
     
     # Start the timer monitoring thread if not already running
     if not timer_thread_running:
-        monitored_user = login
+        with timer_lock:
+            monitored_user = login
         timer_thread_running = True
         timer_thread = threading.Thread(target=check_timer_loop, daemon=True)
         timer_thread.start()
         print(f"Started timer monitoring thread for user: {login}")
     elif monitored_user != login:
         # Update monitored user if it changed
-        monitored_user = login
+        with timer_lock:
+            monitored_user = login
         print(f"Updated monitored user to: {login}")
     
     print(f"Calcul du logtime pour {login}...")
