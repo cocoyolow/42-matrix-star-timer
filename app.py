@@ -4,6 +4,17 @@ from flask_cors import CORS
 import requests
 from dateutil import parser
 from datetime import datetime, timezone
+import threading
+import time
+
+# Try to import plyer for system notifications
+try:
+    from plyer import notification
+    PLYER_AVAILABLE = True
+except ImportError:
+    PLYER_AVAILABLE = False
+    print("Warning: plyer not installed. System notifications will be disabled.")
+    print("Install with: pip install plyer")
 
 app = Flask(__name__)
 CORS(app)
@@ -11,6 +22,13 @@ CORS(app)
 # Identifiants Intra
 UID = "u-s4t2ud-8df2267f1a2843df41e6a72698bec9824e854233bc049e93a09f92d0240a5e1b"
 SECRET = "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"
+
+# Global variables for timer monitoring
+monitored_user = None
+timer_thread = None
+timer_thread_running = False
+timer_lock = threading.Lock()  # Lock for thread-safe access to monitored_user
+notified_events = set()  # Track which events we've already notified about
 
 
 def get_access_token():
@@ -29,8 +47,121 @@ def get_access_token():
         return None
 
 
+def send_notification(title, message):
+    """Send a system notification if plyer is available."""
+    if PLYER_AVAILABLE:
+        try:
+            notification.notify(
+                title=title,
+                message=message,
+                app_name='42 Matrix Timer',
+                timeout=10
+            )
+            print(f"Notification sent: {title} - {message}")
+        except Exception as e:
+            print(f"Error sending notification: {e}")
+    else:
+        print(f"Notification (plyer not available): {title} - {message}")
+
+
+def check_timer_loop():
+    """Background thread that monitors upcoming scale_teams (evaluations)."""
+    global timer_thread_running, monitored_user, notified_events
+    
+    print(f"Starting timer monitoring for user: {monitored_user}")
+    
+    while timer_thread_running:
+        try:
+            # Get current monitored user with thread safety
+            with timer_lock:
+                current_user = monitored_user
+            
+            if not current_user:
+                time.sleep(60)
+                continue
+            
+            token = get_access_token()
+            if not token:
+                print("Failed to get token for timer check")
+                time.sleep(60)
+                continue
+            
+            headers = {"Authorization": f"Bearer {token}"}
+            
+            # Fetch upcoming scale_teams (evaluations) for the user
+            url = f"https://api.intra.42.fr/v2/users/{current_user}/scale_teams/as_corrector"
+            response = requests.get(url, headers=headers)
+            
+            if response.status_code != 200:
+                print(f"Failed to fetch scale_teams: {response.status_code}")
+                time.sleep(60)
+                continue
+            
+            scale_teams = response.json()
+            now = datetime.now(timezone.utc)
+            
+            # First, identify old events (more than 1 hour past)
+            old_event_ids = set()
+            for event in scale_teams:
+                if event.get('begin_at'):
+                    begin_time = parser.isoparse(event['begin_at'])
+                    if (now - begin_time).total_seconds() > 3600:
+                        event_id = f"{event.get('id')}_{event.get('begin_at')}"
+                        old_event_ids.add(event_id)
+            
+            # Clean up old event IDs from notified_events
+            notified_events = notified_events - old_event_ids
+            
+            # Check for upcoming events
+            for event in scale_teams:
+                # Only check upcoming events (not past ones)
+                if event.get('begin_at'):
+                    begin_time = parser.isoparse(event['begin_at'])
+                    time_diff = (begin_time - now).total_seconds()
+                    
+                    # Create a unique identifier for this event
+                    event_id = f"{event.get('id')}_{event.get('begin_at')}"
+                    
+                    # Check if the event is imminent (within 5 minutes) and not already notified
+                    if 0 <= time_diff <= 300 and event_id not in notified_events:
+                        # Extract relevant information
+                        team_name = event.get('team', {}).get('name', 'Unknown team')
+                        minutes_left = int(time_diff / 60)
+                        
+                        send_notification(
+                            title="42 Evaluation Starting Soon!",
+                            message=f"Evaluation for {team_name} starts in {minutes_left} minute(s)!"
+                        )
+                        notified_events.add(event_id)
+                        print(f"Notified about evaluation: {team_name} in {minutes_left} minutes")
+            
+        except Exception as e:
+            print(f"Error in timer check loop: {e}")
+        
+        # Check every 60 seconds
+        time.sleep(60)
+    
+    print("Timer monitoring stopped")
+
+
 @app.route('/logtime/<login>')
 def get_logtime(login):
+    global monitored_user, timer_thread, timer_thread_running
+    
+    # Start the timer monitoring thread if not already running
+    if not timer_thread_running:
+        with timer_lock:
+            monitored_user = login
+        timer_thread_running = True
+        timer_thread = threading.Thread(target=check_timer_loop, daemon=True)
+        timer_thread.start()
+        print(f"Started timer monitoring thread for user: {login}")
+    elif monitored_user != login:
+        # Update monitored user if it changed
+        with timer_lock:
+            monitored_user = login
+        print(f"Updated monitored user to: {login}")
+    
     print(f"Calcul du logtime pour {login}...")
     token = get_access_token()
     if not token:
