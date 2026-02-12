@@ -20,8 +20,8 @@ app = Flask(__name__)
 CORS(app)
 
 # Identifiants Intra
-UID = "u-s4t2ud-8df2267f1a2843df41e6a72698bec9824e854233bc049e93a09f92d0240a5e1b"
-SECRET = "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"
+UID = "ENTER_YOUR_UID_HERE"
+SECRET = "ENTER_YOUR_SECRET_HERE"
 
 # Global variables for timer monitoring
 monitored_user = None
