@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "42 Logtime Checker",
+  "version": "1.1",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:5000/*",
+    "https://profile.intra.42.fr/*",
+    "https://matrix.42lyon.fr/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://profile.intra.42.fr/*",
+        "https://matrix.42lyon.fr/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
