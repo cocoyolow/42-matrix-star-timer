@@ -12,6 +12,12 @@ https://profile.intra.42.fr/
 copy the client id and secret
 in app.py
 
+put your login in the .js
+
+go in chrome extensions, activate devlopper mode at the top right, click load unpacked and select the folder of the project
+
+pip install flask and flask-cors
+
 start the server ( app.py )
 
 all done
