@@ -19,16 +19,17 @@ except ImportError:
 app = Flask(__name__)
 CORS(app)
 
-# Identifiants Intra
-UID = "ENTER_YOUR_UID_HERE"
-SECRET = "ENTER_YOUR_SECRET_HERE"
+# --- CONFIGURATION ---
+UID = "u-s4t2ud-8df2267f1a2843df41e6a72698bec9824e854233bc049e93a09f92d0240a5e1b"
+SECRET = "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"
 
-# Global variables for timer monitoring
+# --- VARIABLES GLOBALES ---
 monitored_user = None
 timer_thread = None
 timer_thread_running = False
-timer_lock = threading.Lock()  # Lock for thread-safe access to monitored_user
-notified_events = set()  # Track which events we've already notified about
+timer_lock = threading.Lock()
+notified_events = set()      # Pour ne pas spammer les notifs d'éval
+last_star_time = None        # Pour ne pas spammer la notif d'étoile
 
 
 def get_access_token():
@@ -48,7 +49,8 @@ def get_access_token():
 
 
 def send_notification(title, message):
-    """Send a system notification if plyer is available."""
+    """Envoie une notif système si plyer est installé."""
+    print(f"NOTIFICATION: {title} - {message}")  # Log console
     if PLYER_AVAILABLE:
         try:
             notification.notify(
@@ -57,112 +59,119 @@ def send_notification(title, message):
                 app_name='42 Matrix Timer',
                 timeout=10
             )
-            print(f"Notification sent: {title} - {message}")
         except Exception as e:
-            print(f"Error sending notification: {e}")
-    else:
-        print(f"Notification (plyer not available): {title} - {message}")
+            print(f"Erreur plyer: {e}")
 
 
 def check_timer_loop():
-    """Background thread that monitors upcoming scale_teams (evaluations)."""
-    global timer_thread_running, monitored_user, notified_events
-    
-    print(f"Starting timer monitoring for user: {monitored_user}")
-    
+    """Thread qui vérifie les évals ET le timer de 42 min en arrière-plan."""
+    global timer_thread_running, monitored_user, notified_events, last_star_time
+
+    print("Démarrage du monitoring...")
+
     while timer_thread_running:
         try:
-            # Get current monitored user with thread safety
+            # 1. Récupération sécurisée du user
             with timer_lock:
                 current_user = monitored_user
-            
+
             if not current_user:
                 time.sleep(60)
                 continue
-            
+
+            # 2. Token
             token = get_access_token()
             if not token:
-                print("Failed to get token for timer check")
                 time.sleep(60)
                 continue
-            
+
             headers = {"Authorization": f"Bearer {token}"}
-            
-            # Fetch upcoming scale_teams (evaluations) for the user
-            url = f"https://api.intra.42.fr/v2/users/{current_user}/scale_teams/as_corrector"
-            response = requests.get(url, headers=headers)
-            
-            if response.status_code != 200:
-                print(f"Failed to fetch scale_teams: {response.status_code}")
-                time.sleep(60)
-                continue
-            
-            scale_teams = response.json()
-            now = datetime.now(timezone.utc)
-            
-            # First, identify old events (more than 1 hour past)
-            old_event_ids = set()
-            for event in scale_teams:
-                if event.get('begin_at'):
-                    begin_time = parser.isoparse(event['begin_at'])
-                    if (now - begin_time).total_seconds() > 3600:
-                        event_id = f"{event.get('id')}_{event.get('begin_at')}"
-                        old_event_ids.add(event_id)
-            
-            # Clean up old event IDs from notified_events
-            notified_events = notified_events - old_event_ids
-            
-            # Check for upcoming events
-            for event in scale_teams:
-                # Only check upcoming events (not past ones)
-                if event.get('begin_at'):
-                    begin_time = parser.isoparse(event['begin_at'])
-                    time_diff = (begin_time - now).total_seconds()
-                    
-                    # Create a unique identifier for this event
-                    event_id = f"{event.get('id')}_{event.get('begin_at')}"
-                    
-                    # Check if the event is imminent (within 5 minutes) and not already notified
-                    if 0 <= time_diff <= 300 and event_id not in notified_events:
-                        # Extract relevant information
-                        team_name = event.get('team', {}).get('name', 'Unknown team')
-                        minutes_left = int(time_diff / 60)
-                        
-                        send_notification(
-                            title="42 Evaluation Starting Soon!",
-                            message=f"Evaluation for {team_name} starts in {minutes_left} minute(s)!"
-                        )
-                        notified_events.add(event_id)
-                        print(f"Notified about evaluation: {team_name} in {minutes_left} minutes")
-            
+
+            # === PARTIE A : CHECK DES ÉVALUATIONS ===
+            try:
+                url_evals = f"https://api.intra.42.fr/v2/users/{current_user}/scale_teams/as_corrector"
+                resp_eval = requests.get(url_evals, headers=headers)
+
+                if resp_eval.status_code == 200:
+                    scale_teams = resp_eval.json()
+                    now = datetime.now(timezone.utc)
+
+                    for event in scale_teams:
+                        if event.get('begin_at'):
+                            begin_time = parser.isoparse(event['begin_at'])
+                            time_diff = (begin_time - now).total_seconds()
+                            event_id = f"{event.get('id')}_{event.get('begin_at')}"
+
+                            # Si c'est dans moins de 5 min (300s) et pas encore notifié
+                            if 0 <= time_diff <= 300 and event_id not in notified_events:
+                                team_name = event.get('team', {}).get('name', 'Inconnue')
+                                m_left = int(time_diff / 60)
+                                send_notification(
+                                    "⚠️ Évaluation imminente !",
+                                    f"Correction {team_name} dans {m_left} min !"
+                                )
+                                notified_events.add(event_id)
+            except Exception as e:
+                print(f"Erreur check évals: {e}")
+
+            # === PARTIE B : CHECK TIMER ÉTOILE (42 MIN) ===
+            try:
+                # On ne prend que la dernière session
+                url_loc = f"https://api.intra.42.fr/v2/users/{current_user}/locations?page[size]=1"
+                resp_loc = requests.get(url_loc, headers=headers)
+
+                if resp_loc.status_code == 200 and resp_loc.json():
+                    last_session = resp_loc.json()[0]
+                    end_at_str = last_session.get('end_at')
+
+                    # Si end_at existe, c'est que l'utilisateur est déconnecté
+                    if end_at_str:
+                        end_time = parser.isoparse(end_at_str)
+                        now = datetime.now(timezone.utc)
+                        diff_seconds = (now - end_time).total_seconds()
+
+                        # 42 minutes = 2520 secondes
+                        if diff_seconds >= 2520:
+                            # Si on n'a pas encore notifié pour CETTE session précise
+                            if last_star_time != end_at_str:
+                                send_notification(
+                                    "⭐ Étoile Disponible !",
+                                    "Les 42 minutes sont passées. Tu peux reprendre une place !"
+                                )
+                                last_star_time = end_at_str
+                        else:
+                            # Juste pour info dans la console
+                            reste = int((2520 - diff_seconds) / 60)
+                            # print(f"DEBUG: Reste {reste} min avant étoile.")
+
+            except Exception as e:
+                print(f"Erreur check étoile: {e}")
+
         except Exception as e:
-            print(f"Error in timer check loop: {e}")
-        
-        # Check every 60 seconds
+            print(f"Erreur générale boucle: {e}")
+
+        # Pause de 60 secondes entre chaque vérification
         time.sleep(60)
-    
-    print("Timer monitoring stopped")
 
 
 @app.route('/logtime/<login>')
 def get_logtime(login):
     global monitored_user, timer_thread, timer_thread_running
-    
-    # Start the timer monitoring thread if not already running
+
+    # Gestion du thread de monitoring
     if not timer_thread_running:
         with timer_lock:
             monitored_user = login
         timer_thread_running = True
         timer_thread = threading.Thread(target=check_timer_loop, daemon=True)
         timer_thread.start()
-        print(f"Started timer monitoring thread for user: {login}")
+        print(f"Thread lancé pour {login}")
     elif monitored_user != login:
-        # Update monitored user if it changed
         with timer_lock:
             monitored_user = login
-        print(f"Updated monitored user to: {login}")
-    
-    print(f"Calcul du logtime pour {login}...")
+        print(f"User changé pour {login}")
+
+    print(f"Récupération logtime pour {login}...")
     token = get_access_token()
     if not token:
         return jsonify({"error": "Failed to get token"}), 500
@@ -171,7 +180,7 @@ def get_logtime(login):
     all_locations = []
     page = 1
 
-    # Récupération de TOUTES les pages
+    # Récupération de l'historique (limité ici pour aller plus vite, ou boucle complète)
     while True:
         url = f"https://api.intra.42.fr/v2/users/{login}/locations?page[size]=100&page[number]={page}"
         response = requests.get(url, headers=headers)
@@ -181,45 +190,37 @@ def get_logtime(login):
         if not data:
             break
         all_locations.extend(data)
-        print(f"Page {page} récupérée ({len(data)} sessions)")
         if len(data) < 100:
             break
         page += 1
 
-    # --- CALCUL DU TEMPS PAR POSTE ---
+    # Calcul stats par poste
     pc_stats = {}
-
     for loc in all_locations:
         host = loc['host']
-        start = parser.isoparse(loc['begin_at'])
+        if not loc['begin_at']: continue
 
-        # Gestion session active (pas de end_at)
+        start = parser.isoparse(loc['begin_at'])
         if loc['end_at']:
             end = parser.isoparse(loc['end_at'])
         else:
             end = datetime.now(timezone.utc)
-            # On peut ajouter un indicateur visuel pour le poste actuel si tu veux
-            # host = host
 
         duration = (end - start).total_seconds()
 
-        # On additionne le temps pour ce poste
         if host in pc_stats:
             pc_stats[host] += duration
         else:
             pc_stats[host] = duration
 
-    # Formatage en texte lisible (ex: "10h30")
+    # Formatage
     formatted_data = {}
     for host, seconds in pc_stats.items():
         hours = int(seconds // 3600)
         minutes = int((seconds % 3600) // 60)
-
-        # On ne garde que si > 0
         if hours > 0 or minutes > 0:
             formatted_data[host] = f"{hours}h{minutes}"
 
-    print(f"Envoi des stats pour {len(formatted_data)} postes.")
     return jsonify(formatted_data)
 
 
