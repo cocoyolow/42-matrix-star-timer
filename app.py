@@ -66,42 +66,42 @@ def send_notification(title, message):
 def check_timer_loop():
     """Thread qui vérifie les évals ET le timer de 42 min en arrière-plan."""
     global timer_thread_running, monitored_user, notified_events, last_star_time
-
+    
     print("Démarrage du monitoring...")
-
+    
     while timer_thread_running:
         try:
             # 1. Récupération sécurisée du user
             with timer_lock:
                 current_user = monitored_user
-
+            
             if not current_user:
                 time.sleep(60)
                 continue
-
+            
             # 2. Token
             token = get_access_token()
             if not token:
                 time.sleep(60)
                 continue
-
+            
             headers = {"Authorization": f"Bearer {token}"}
-
+            
             # === PARTIE A : CHECK DES ÉVALUATIONS ===
             try:
                 url_evals = f"https://api.intra.42.fr/v2/users/{current_user}/scale_teams/as_corrector"
                 resp_eval = requests.get(url_evals, headers=headers)
-
+                
                 if resp_eval.status_code == 200:
                     scale_teams = resp_eval.json()
                     now = datetime.now(timezone.utc)
-
+                    
                     for event in scale_teams:
                         if event.get('begin_at'):
                             begin_time = parser.isoparse(event['begin_at'])
                             time_diff = (begin_time - now).total_seconds()
                             event_id = f"{event.get('id')}_{event.get('begin_at')}"
-
+                            
                             # Si c'est dans moins de 5 min (300s) et pas encore notifié
                             if 0 <= time_diff <= 300 and event_id not in notified_events:
                                 team_name = event.get('team', {}).get('name', 'Inconnue')
@@ -119,17 +119,17 @@ def check_timer_loop():
                 # On ne prend que la dernière session
                 url_loc = f"https://api.intra.42.fr/v2/users/{current_user}/locations?page[size]=1"
                 resp_loc = requests.get(url_loc, headers=headers)
-
+                
                 if resp_loc.status_code == 200 and resp_loc.json():
                     last_session = resp_loc.json()[0]
                     end_at_str = last_session.get('end_at')
-
+                    
                     # Si end_at existe, c'est que l'utilisateur est déconnecté
                     if end_at_str:
                         end_time = parser.isoparse(end_at_str)
                         now = datetime.now(timezone.utc)
                         diff_seconds = (now - end_time).total_seconds()
-
+                        
                         # 42 minutes = 2520 secondes
                         if diff_seconds >= 2520:
                             # Si on n'a pas encore notifié pour CETTE session précise
@@ -143,13 +143,13 @@ def check_timer_loop():
                             # Juste pour info dans la console
                             reste = int((2520 - diff_seconds) / 60)
                             # print(f"DEBUG: Reste {reste} min avant étoile.")
-
+                            
             except Exception as e:
                 print(f"Erreur check étoile: {e}")
 
         except Exception as e:
             print(f"Erreur générale boucle: {e}")
-
+        
         # Pause de 60 secondes entre chaque vérification
         time.sleep(60)
 
@@ -157,7 +157,7 @@ def check_timer_loop():
 @app.route('/logtime/<login>')
 def get_logtime(login):
     global monitored_user, timer_thread, timer_thread_running
-
+    
     # Gestion du thread de monitoring
     if not timer_thread_running:
         with timer_lock:
@@ -170,7 +170,7 @@ def get_logtime(login):
         with timer_lock:
             monitored_user = login
         print(f"User changé pour {login}")
-
+    
     print(f"Récupération logtime pour {login}...")
     token = get_access_token()
     if not token:
@@ -199,7 +199,7 @@ def get_logtime(login):
     for loc in all_locations:
         host = loc['host']
         if not loc['begin_at']: continue
-
+        
         start = parser.isoparse(loc['begin_at'])
         if loc['end_at']:
             end = parser.isoparse(loc['end_at'])
@@ -207,7 +207,7 @@ def get_logtime(login):
             end = datetime.now(timezone.utc)
 
         duration = (end - start).total_seconds()
-
+        
         if host in pc_stats:
             pc_stats[host] += duration
         else:
